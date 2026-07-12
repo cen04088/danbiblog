@@ -193,12 +193,27 @@ def slot_briefs(b):
     return slots
 
 
+def neighbor_slot(slot):
+    """point{i}와 info{i}는 앞뒤로 붙어서 나오는 짝 — 한쪽을 (재)생성할 때
+    다른 쪽 내용을 참고시켜서 서로 안 맞는 얘기를 하지 않게 한다."""
+    if slot.startswith("point"):
+        return f"info{slot[5:]}"
+    if slot.startswith("info"):
+        return f"point{slot[4:]}"
+    return None
+
+
 @st.cache_resource
 def get_client(key):
     return genai.Client(api_key=key)
 
 
-def generate_slot(b, key, brief):
+def generate_slot(b, key, brief, context=""):
+    context_line = (
+        f"\n\n참고 — 바로 옆에 붙는 다른 문단(그대로 베끼지 말고, 내용이 서로 겹치거나 "
+        f"어긋나지 않게 자연스럽게 흐름만 맞춰라):\n{context}"
+        if context else ""
+    )
     prompt = f"""아래 협찬 리뷰의 슬롯 하나만 써라.
 
 브랜드: {b['brand']}
@@ -206,7 +221,7 @@ def generate_slot(b, key, brief):
 검색용 이름: {b['pfull']}
 스펙: {' / '.join(f'{k} {v}' for k, v in b['specs'])}
 
-슬롯 지시사항: {brief}
+슬롯 지시사항: {brief}{context_line}
 
 원고 텍스트만 출력해라. 설명이나 따옴표로 감싸지 마라."""
 
@@ -223,12 +238,19 @@ def generate_slot(b, key, brief):
 
 
 def write(b, key):
-    return {s["slot"]: generate_slot(b, key, s["brief"]) for s in slot_briefs(b)}
+    filled = {}
+    for s in slot_briefs(b):
+        neighbor = neighbor_slot(s["slot"])
+        context = filled.get(neighbor, "") if neighbor else ""
+        filled[s["slot"]] = generate_slot(b, key, s["brief"], context)
+    return filled
 
 
-def rewrite_one(b, key, slot):
+def rewrite_one(b, key, slot, filled):
     brief = next(s["brief"] for s in slot_briefs(b) if s["slot"] == slot)
-    return generate_slot(b, key, brief)
+    neighbor = neighbor_slot(slot)
+    context = filled.get(neighbor, "") if neighbor else ""
+    return generate_slot(b, key, brief, context)
 
 
 def friendly_error(e):
@@ -358,7 +380,7 @@ if "filled" in st.session_state:
                 if st.button("🔄 이 문단 다시 쓰기", key=f"rewrite_{draft_id}_{slot}"):
                     with st.spinner("다시 쓰는 중…"):
                         try:
-                            st.session_state.filled[slot] = rewrite_one(b, KEY, slot)
+                            st.session_state.filled[slot] = rewrite_one(b, KEY, slot, filled)
                             st.rerun()
                         except Exception as e:
                             st.error(friendly_error(e))
