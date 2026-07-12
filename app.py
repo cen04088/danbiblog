@@ -182,44 +182,8 @@ def get_client(key):
     return genai.Client(api_key=key)
 
 
-def write(b, key):
-    slots = slot_briefs(b)
-    prompt = f"""아래 협찬 리뷰의 각 슬롯 원고를 써라.
-
-브랜드: {b['brand']}
-제품명: {b['pname']}
-검색용 이름: {b['pfull']}
-스펙: {' / '.join(f'{k} {v}' for k, v in b['specs'])}
-체험 메모: {b['notes'] or '(없음)'}
-
-슬롯:
-{json.dumps(slots, ensure_ascii=False, indent=2)}
-
-JSON 객체 하나만 출력하라. 키는 slot 이름, 값은 원고 문자열.
-코드펜스도 다른 설명도 붙이지 마라."""
-
-    schema = {
-        "type": "object",
-        "properties": {s["slot"]: {"type": "string"} for s in slots},
-        "required": [s["slot"] for s in slots],
-    }
-
-    r = get_client(key).models.generate_content(
-        model="gemini-flash-latest",
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            system_instruction=STYLE,
-            max_output_tokens=6000,
-            response_mime_type="application/json",
-            response_schema=schema,
-        ),
-    )
-    return json.loads(r.text.strip())
-
-
-def rewrite_one(b, key, slot):
-    brief = next(s["brief"] for s in slot_briefs(b) if s["slot"] == slot)
-    prompt = f"""아래 협찬 리뷰의 슬롯 하나만 새로 써라.
+def generate_slot(b, key, brief):
+    prompt = f"""아래 협찬 리뷰의 슬롯 하나만 써라.
 
 브랜드: {b['brand']}
 제품명: {b['pname']}
@@ -234,14 +198,21 @@ def rewrite_one(b, key, slot):
     r = get_client(key).models.generate_content(
         model="gemini-flash-latest",
         contents=prompt,
-        config=types.GenerateContentConfig(system_instruction=STYLE, max_output_tokens=1200),
+        config=types.GenerateContentConfig(system_instruction=STYLE, max_output_tokens=1500),
     )
     return r.text.strip()
 
 
+def write(b, key):
+    return {s["slot"]: generate_slot(b, key, s["brief"]) for s in slot_briefs(b)}
+
+
+def rewrite_one(b, key, slot):
+    brief = next(s["brief"] for s in slot_briefs(b) if s["slot"] == slot)
+    return generate_slot(b, key, brief)
+
+
 def friendly_error(e):
-    if isinstance(e, json.JSONDecodeError):
-        return "AI가 형식에 안 맞는 답을 줬어요. 다시 눌러주세요."
     if isinstance(e, errors.APIError):
         if e.code in (401, 403):
             return "API 키가 유효하지 않아요. Secrets에 등록한 GEMINI_API_KEY를 확인해주세요."
