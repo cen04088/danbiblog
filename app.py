@@ -8,7 +8,6 @@ import json
 import re
 from pathlib import Path
 
-import pandas as pd
 import streamlit as st
 from google import genai
 from google.genai import types, errors
@@ -69,10 +68,10 @@ def load_last():
     return {}
 
 
-def save_last(b, spec_df):
+def save_last(b):
     data = {
         "brand": b["brand"],
-        "specs": spec_df.values.tolist(),
+        "specs": b["specs"],
         "disc": b["disc"],
         "sponsored": b["sponsored"],
     }
@@ -254,7 +253,10 @@ st.set_page_config(page_title="단비 포스팅 스튜디오", page_icon="♥", 
 st.title("단비 포스팅 스튜디오 ♥")
 st.caption("제품 정보만 넣으면, 붙여넣기 순서 그대로 초안이 나옵니다")
 
-KEY = st.secrets.get("GEMINI_API_KEY", "")
+try:
+    KEY = st.secrets.get("GEMINI_API_KEY", "")
+except Exception:
+    KEY = ""
 LAST = load_last()
 
 with st.sidebar:
@@ -265,12 +267,9 @@ with st.sidebar:
     pfull = st.text_input("검색용 이름", placeholder="바잇미 산리오 해충방지 강아지 쿨티",
                           help="본문에 3~5번 자연스럽게 반복됩니다")
 
-    st.caption("스펙 — 행을 추가/삭제할 수 있어요")
-    default_specs = LAST.get("specs") or [["색상", "블루, 옐로우, 레드"], ["사이즈", "S ~ 3XL"]]
-    spec_df = st.data_editor(
-        pd.DataFrame(default_specs, columns=["항목", "내용"]),
-        num_rows="dynamic", width="stretch", hide_index=True, key="spec_editor",
-    )
+    default_spec_lines = "\n".join(f"{k} : {v}" for k, v in LAST.get("specs", [])) or \
+        "색상 : 블루, 옐로우, 레드\n사이즈 : S ~ 3XL"
+    spec_raw = st.text_area("스펙", default_spec_lines, help="한 줄에 하나씩,  항목 : 내용")
     link = st.text_input("상품 링크", placeholder="https://naver.me/...")
 
     st.header("이번 글 이야기")
@@ -296,8 +295,8 @@ if go:
         st.error("제품명과 '좋았던 점'은 최소 한 줄 필요합니다.")
         st.stop()
 
-    specs = [(str(r["항목"]).strip(), str(r["내용"]).strip())
-             for _, r in spec_df.iterrows() if str(r["항목"]).strip()]
+    specs = [tuple(x.split(":", 1)) for x in spec_raw.splitlines() if ":" in x]
+    specs = [(k.strip(), v.strip()) for k, v in specs]
 
     b = {
         "brand": brand, "pname": pname, "pfull": pfull or pname, "link": link,
@@ -313,7 +312,7 @@ if go:
             st.session_state.filled = write(b, KEY)
             st.session_state.brief = b
             st.session_state.draft_id = st.session_state.get("draft_id", 0) + 1
-            save_last(b, spec_df)
+            save_last(b)
         except Exception as e:
             st.error(friendly_error(e))
 
