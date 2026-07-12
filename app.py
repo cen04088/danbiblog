@@ -225,21 +225,37 @@ if go:
         try:
             st.session_state.blocks = build(b, write(b, KEY))
             st.session_state.brief = b
+            st.session_state.draft_id = st.session_state.get("draft_id", 0) + 1
         except Exception as e:
             st.error(f"초안을 못 만들었어요. 다시 눌러주세요.\n\n{e}")
 
 if "blocks" in st.session_state:
     blocks = st.session_state.blocks
     b = st.session_state.brief
+    draft_id = st.session_state.get("draft_id", 0)
 
     for lvl, msg in check(blocks, b):
         getattr(st, lvl)(msg)
 
     n_photo = sum(1 for t, _ in blocks if t == "photo")
     files = st.file_uploader(
-        f"사진 {n_photo}장을 한 번에 올려주세요 — 순서대로 자리에 들어갑니다",
+        f"사진을 한 번에 올려주세요 (필요한 사진: {n_photo}장)",
         type=["png", "jpg", "jpeg", "webp"], accept_multiple_files=True,
+        key=f"uploader_{draft_id}",
     )
+
+    order = list(range(n_photo))
+    if files:
+        st.caption("자리마다 들어갈 사진을 바꾸고 싶으면 아래에서 골라주세요. 기본값은 업로드한 순서입니다.")
+        options = ["(비워두기)"] + [f"{i + 1}. {f.name}" for i, f in enumerate(files)]
+        cols = st.columns(4)
+        order = []
+        for pi in range(n_photo):
+            default_idx = pi + 1 if pi < len(files) else 0
+            with cols[pi % 4]:
+                choice = st.selectbox(f"사진 {pi + 1} 자리", options, index=default_idx,
+                                      key=f"slot_{draft_id}_{pi}")
+            order.append(options.index(choice) - 1 if choice != "(비워두기)" else None)
 
     st.divider()
     st.subheader("발행 순서")
@@ -250,10 +266,11 @@ if "blocks" in st.session_state:
         if kind == "text":
             st.code(val, language=None)          # ← 우측 상단에 복사 버튼
         else:
+            fi = order[pi] if pi < len(order) else None
             c1, c2 = st.columns([1, 4])
             with c1:
-                if files and pi < len(files):
-                    st.image(files[pi], use_container_width=True)
+                if fi is not None and files and fi < len(files):
+                    st.image(files[fi], use_container_width=True)
                 else:
                     st.markdown(
                         "<div style='height:90px;border:2px dashed #5FCBAA;border-radius:10px;"
