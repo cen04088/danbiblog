@@ -211,7 +211,7 @@ def generate_slot(b, key, brief):
 원고 텍스트만 출력해라. 설명이나 따옴표로 감싸지 마라."""
 
     r = get_client(key).models.generate_content(
-        model="gemini-flash-lite-latest",
+        model="gemini-3.5-flash",
         contents=prompt,
         config=types.GenerateContentConfig(system_instruction=STYLE, max_output_tokens=1500),
     )
