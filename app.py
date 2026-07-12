@@ -213,7 +213,11 @@ def generate_slot(b, key, brief):
     r = get_client(key).models.generate_content(
         model="gemini-3.5-flash",
         contents=prompt,
-        config=types.GenerateContentConfig(system_instruction=STYLE, max_output_tokens=1500),
+        config=types.GenerateContentConfig(
+            system_instruction=STYLE,
+            max_output_tokens=2048,
+            thinking_config=types.ThinkingConfig(thinking_budget=0),
+        ),
     )
     return r.text.strip()
 
