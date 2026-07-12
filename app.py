@@ -2,12 +2,12 @@
 """
 단비 포스팅 스튜디오 (Streamlit)
 로컬:  streamlit run app.py
-배포:  GitHub push → share.streamlit.io → Secrets에 ANTHROPIC_API_KEY 등록
+배포:  GitHub push → share.streamlit.io → Secrets에 GEMINI_API_KEY 등록
 """
 import json
 import re
 import streamlit as st
-from anthropic import Anthropic
+import google.generativeai as genai
 
 # ───────────────────────────────────────────────
 # 상수 — 절대 바뀌면 안 되는 문구
@@ -149,13 +149,13 @@ def write(b, key):
 JSON 객체 하나만 출력하라. 키는 slot 이름, 값은 원고 문자열.
 코드펜스도 다른 설명도 붙이지 마라."""
 
-    r = Anthropic(api_key=key).messages.create(
-        model="claude-sonnet-4-6",
-        max_tokens=4000,
-        system=STYLE,
-        messages=[{"role": "user", "content": prompt}],
+    genai.configure(api_key=key)
+    model = genai.GenerativeModel("gemini-flash-latest", system_instruction=STYLE)
+    r = model.generate_content(
+        prompt,
+        generation_config={"max_output_tokens": 4000, "response_mime_type": "application/json"},
     )
-    raw = "".join(c.text for c in r.content if c.type == "text").strip()
+    raw = r.text.strip()
     raw = re.sub(r"^```(?:json)?|```$", "", raw, flags=re.M).strip()
     return json.loads(raw)
 
@@ -167,7 +167,7 @@ st.set_page_config(page_title="단비 포스팅 스튜디오", page_icon="♥", 
 st.title("단비 포스팅 스튜디오 ♥")
 st.caption("제품 정보만 넣으면, 붙여넣기 순서 그대로 초안이 나옵니다")
 
-KEY = st.secrets.get("ANTHROPIC_API_KEY", "")
+KEY = st.secrets.get("GEMINI_API_KEY", "")
 
 with st.sidebar:
     st.header("제품 정보")
@@ -197,7 +197,7 @@ with st.sidebar:
 
 if go:
     if not KEY:
-        st.error("API 키가 설정되지 않았습니다. (배포 설정 → Secrets → ANTHROPIC_API_KEY)")
+        st.error("API 키가 설정되지 않았습니다. (배포 설정 → Secrets → GEMINI_API_KEY)")
         st.stop()
     if not pname or not points_raw.strip():
         st.error("제품명과 ‘좋았던 점’은 최소 한 줄 필요합니다.")
