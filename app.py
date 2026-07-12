@@ -177,6 +177,11 @@ def slot_briefs(b):
     return slots
 
 
+@st.cache_resource
+def get_client(key):
+    return genai.Client(api_key=key)
+
+
 def write(b, key):
     slots = slot_briefs(b)
     prompt = f"""아래 협찬 리뷰의 각 슬롯 원고를 써라.
@@ -199,7 +204,7 @@ JSON 객체 하나만 출력하라. 키는 slot 이름, 값은 원고 문자열.
         "required": [s["slot"] for s in slots],
     }
 
-    r = genai.Client(api_key=key).models.generate_content(
+    r = get_client(key).models.generate_content(
         model="gemini-flash-latest",
         contents=prompt,
         config=types.GenerateContentConfig(
@@ -226,7 +231,7 @@ def rewrite_one(b, key, slot):
 
 원고 텍스트만 출력해라. 설명이나 따옴표로 감싸지 마라."""
 
-    r = genai.Client(api_key=key).models.generate_content(
+    r = get_client(key).models.generate_content(
         model="gemini-flash-latest",
         contents=prompt,
         config=types.GenerateContentConfig(system_instruction=STYLE, max_output_tokens=1200),
