@@ -53,6 +53,24 @@ STYLE = """너는 네이버 블로그 '단비 언니'의 문체를 그대로 재
 BANNED = ["치료", "완치", "부작용 없음", "부작용이 없", "100%", "효과가 보장", "의학적으로 입증"]
 CLOSERS = ("♥", "(!)", "ㅎㅎ", "?!", "♡", "🫡")
 
+CUSTOM = "직접 입력"
+HOOK_OPTIONS = [
+    "요즘 비가 자주 와요", "날씨가 부쩍 더워졌어요", "날씨가 쌀쌀해졌어요",
+    "환절기라 털갈이가 심해요", "미세먼지가 심한 날이 많아요",
+    "산책하기 좋은 날씨예요", "이사한 지 얼마 안 됐어요",
+]
+PROBLEM_OPTIONS = [
+    "산책할 때 옷을 입히면 더워해요", "관절이 약해서 오래 걷는 걸 힘들어해요",
+    "털갈이가 심해서 집안이 지저분해요", "피부가 예민해서 트러블이 잦아요",
+    "발바닥이 미끄러워해요", "산책 후 발 닦이는 걸 싫어해요",
+    "낯을 많이 가려서 외출을 꺼려해요",
+]
+POINT_OPTIONS = [
+    "사이즈가 잘 맞아요", "소재가 부드러워요", "입히기 편해요(벨크로·지퍼 등)",
+    "냉감 소재라 시원해요", "보온이 잘 돼요", "세탁이 편해요",
+    "디자인이 예뻐요", "가성비가 좋아요", "냄새가 안 나요", "튼튼해요",
+]
+
 LAST_INPUT_FILE = Path(".last_input.json")
 
 
@@ -90,8 +108,6 @@ def build(b, filled):
     S.append(("photo", "단비 근황 컷 · 눕방이나 산책 사진", None))
 
     card = [b["pname"]] + [f"{k} : {v}" for k, v in b["specs"]]
-    if b["link"]:
-        card.append(b["link"])
     S.append(("text", "\n".join(card), None))
     S.append(("photo", "제품 패키지 또는 착용 전신샷", None))
 
@@ -189,14 +205,13 @@ def generate_slot(b, key, brief):
 제품명: {b['pname']}
 검색용 이름: {b['pfull']}
 스펙: {' / '.join(f'{k} {v}' for k, v in b['specs'])}
-체험 메모: {b['notes'] or '(없음)'}
 
 슬롯 지시사항: {brief}
 
 원고 텍스트만 출력해라. 설명이나 따옴표로 감싸지 마라."""
 
     r = get_client(key).models.generate_content(
-        model="gemini-flash-latest",
+        model="gemini-flash-lite-latest",
         contents=prompt,
         config=types.GenerateContentConfig(system_instruction=STYLE, max_output_tokens=1500),
     )
@@ -246,16 +261,21 @@ with st.sidebar:
     default_spec_lines = "\n".join(f"{k} : {v}" for k, v in LAST.get("specs", [])) or \
         "색상 : 블루, 옐로우, 레드\n사이즈 : S ~ 3XL"
     spec_raw = st.text_area("스펙", default_spec_lines, help="한 줄에 하나씩,  항목 : 내용")
-    link = st.text_input("상품 링크", placeholder="https://naver.me/...")
 
     st.header("이번 글 이야기")
-    hook = st.text_input("요즘 근황 · 계절 한 줄", placeholder="비 자주 오는 시기, 이사 후 벌레가 많음")
-    problem = st.text_input("단비가 겪던 문제", placeholder="산책 때 옷 입히면 단비가 더워함")
-    points_raw = st.text_area("좋았던 점", placeholder="양쪽 벨크로라 다리 안 들고 입힘\n냉감 소재라 산책 때 덜 더워함",
-                              help="한 줄에 하나씩", height=110)
+    hook_choice = st.selectbox("요즘 근황 · 계절 한 줄", HOOK_OPTIONS + [CUSTOM])
+    hook = st.text_input("근황 직접 입력", placeholder="예: 비 자주 오는 시기, 이사 후 벌레가 많음") \
+        if hook_choice == CUSTOM else hook_choice
+
+    problem_choice = st.selectbox("단비가 겪던 문제", PROBLEM_OPTIONS + [CUSTOM])
+    problem = st.text_input("문제 직접 입력", placeholder="예: 산책 때 옷 입히면 단비가 더워함") \
+        if problem_choice == CUSTOM else problem_choice
+
+    point_choices = st.multiselect("좋았던 점 (여러 개 선택 가능)", POINT_OPTIONS)
+    extra_points_raw = st.text_area("그 외 좋았던 점 (목록에 없으면 직접 입력)",
+                                    placeholder="한 줄에 하나씩", height=80)
     terms_raw = st.text_area("「잠깐, ○○?!」로 설명할 용어", placeholder="에코쉴드 방충가공\n강아지 쿨티",
                              help="한 줄에 하나씩")
-    notes = st.text_area("메모", placeholder="아무렇게나 적어도 됩니다")
 
     sponsored = st.checkbox("협찬 받은 제품입니다", value=LAST.get("sponsored", True))
     disc = st.text_input("고지 문구", LAST.get("disc", "본 포스팅은 업체로부터 제품을 제공받아 솔직하게 작성하였습니다.")) \
@@ -267,20 +287,21 @@ if go:
     if not KEY:
         st.error("API 키가 설정되지 않았습니다. (배포 설정 → Secrets → GEMINI_API_KEY)")
         st.stop()
-    if not pname or not points_raw.strip():
-        st.error("제품명과 '좋았던 점'은 최소 한 줄 필요합니다.")
+    points = point_choices + [x.strip() for x in extra_points_raw.splitlines() if x.strip()]
+    if not pname or not points:
+        st.error("제품명과 '좋았던 점'은 최소 한 개 필요합니다.")
         st.stop()
 
     specs = [tuple(x.split(":", 1)) for x in spec_raw.splitlines() if ":" in x]
     specs = [(k.strip(), v.strip()) for k, v in specs]
 
     b = {
-        "brand": brand, "pname": pname, "pfull": pfull or pname, "link": link,
+        "brand": brand, "pname": pname, "pfull": pfull or pname,
         "specs": specs,
         "hook": hook, "problem": problem,
-        "points": [x.strip() for x in points_raw.splitlines() if x.strip()],
+        "points": points,
         "terms": [x.strip() for x in terms_raw.splitlines() if x.strip()],
-        "notes": notes, "sponsored": sponsored, "disc": disc,
+        "sponsored": sponsored, "disc": disc,
     }
 
     with st.spinner("단비 언니 말투로 쓰는 중…"):
