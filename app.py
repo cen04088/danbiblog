@@ -6,8 +6,12 @@
 """
 import json
 import re
+from pathlib import Path
+
+import pandas as pd
 import streamlit as st
-import google.generativeai as genai
+from google import genai
+from google.genai import types, errors
 
 # ───────────────────────────────────────────────
 # 상수 — 절대 바뀌면 안 되는 문구
@@ -30,6 +34,12 @@ STYLE = """너는 네이버 블로그 '단비 언니'의 문체를 그대로 재
 - 나는 '저는', 강아지는 '단비'.
 - ♡ 는 클로징에서만. ㅠㅠ 는 불편했던 이야기에서만.
 
+[분량과 디테일 — 반드시]
+- 각 문단은 최소 3문장 이상. 짧게 끝내지 말고 구체적인 장면으로 채워라.
+- 시간·장소·단비의 표정이나 행동 같은 구체적 디테일을 문단마다 하나 이상 넣어라.
+- 가능하면 이전에 쓰던 제품이나 방법과 비교하는 문장을 한 번 이상 넣어라.
+- 오감(냄새, 촉감, 소리, 온도) 중 하나를 살려 묘사하는 문장을 섞어라.
+
 [금지]
 - 맞춤법을 과하게 다듬지 마라. 느슨한 구어체가 이 블로그의 목소리다.
 - 효능을 단정하지 마라. "~에 도움을 줄 수 있어요" 식 완충 어법.
@@ -44,50 +54,78 @@ STYLE = """너는 네이버 블로그 '단비 언니'의 문체를 그대로 재
 BANNED = ["치료", "완치", "부작용 없음", "부작용이 없", "100%", "효과가 보장", "의학적으로 입증"]
 CLOSERS = ("♥", "(!)", "ㅎㅎ", "?!", "♡", "🫡")
 
+LAST_INPUT_FILE = Path(".last_input.json")
+
+
+# ───────────────────────────────────────────────
+# 최근 입력값 — 반복되는 값(브랜드/스펙/고지문구) 재입력 방지
+# ───────────────────────────────────────────────
+def load_last():
+    if LAST_INPUT_FILE.exists():
+        try:
+            return json.loads(LAST_INPUT_FILE.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return {}
+    return {}
+
+
+def save_last(b, spec_df):
+    data = {
+        "brand": b["brand"],
+        "specs": spec_df.values.tolist(),
+        "disc": b["disc"],
+        "sponsored": b["sponsored"],
+    }
+    try:
+        LAST_INPUT_FILE.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    except OSError:
+        pass
+
 
 # ───────────────────────────────────────────────
 # 룰베이스 — 골격 + 사진 슬롯 가이드
+# 각 항목은 (kind, value, slot) — slot은 재생성 버튼을 붙일 수 있는 원고 슬롯 이름
 # ───────────────────────────────────────────────
 def build(b, filled):
-    S = [("text", OPENING), ("text", filled.get("hook", ""))]
-    S.append(("photo", "단비 근황 컷 · 눕방이나 산책 사진"))
+    S = [("text", OPENING, None), ("text", filled.get("hook", ""), "hook")]
+    S.append(("photo", "단비 근황 컷 · 눕방이나 산책 사진", None))
 
     card = [b["pname"]] + [f"{k} : {v}" for k, v in b["specs"]]
     if b["link"]:
         card.append(b["link"])
-    S.append(("text", "\n".join(card)))
-    S.append(("photo", "제품 패키지 또는 착용 전신샷"))
+    S.append(("text", "\n".join(card), None))
+    S.append(("photo", "제품 패키지 또는 착용 전신샷", None))
 
     for i, p in enumerate(b["points"]):
-        S.append(("photo", f"‘{p}’ 이 보이는 컷"))
-        S.append(("text", filled.get(f"point{i}", "")))
+        S.append(("photo", f"'{p}' 이 보이는 컷", None))
+        S.append(("text", filled.get(f"point{i}", ""), f"point{i}"))
         if filled.get(f"info{i}"):
-            S.append(("text", filled[f"info{i}"]))
+            S.append(("text", filled[f"info{i}"], f"info{i}"))
 
-    S.append(("text", f"접기/펴기\n{b['pfull']} 실사용 후기"))
+    S.append(("text", f"접기/펴기\n{b['pfull']} 실사용 후기", None))
     for _ in range(3):
-        S.append(("photo", "접기/펴기 안에 넣을 사진"))
+        S.append(("photo", "접기/펴기 안에 넣을 사진", None))
 
-    S.append(("photo", "단비가 편안하게 쉬는 마무리 컷"))
-    S.append(("text", filled.get("wrap", "")))
+    S.append(("photo", "단비가 편안하게 쉬는 마무리 컷", None))
+    S.append(("text", filled.get("wrap", ""), "wrap"))
     if b["sponsored"]:
-        S.append(("text", b["disc"]))
-    S.append(("text", CLOSING))
-    return [(t, v) for t, v in S if v]
+        S.append(("text", b["disc"], None))
+    S.append(("text", CLOSING, None))
+    return [(t, v, s) for t, v, s in S if v]
 
 
 # ───────────────────────────────────────────────
 # 체커
 # ───────────────────────────────────────────────
 def check(blocks, b):
-    text = "\n\n".join(v for t, v in blocks if t == "text")
+    text = "\n\n".join(v for t, v, _ in blocks if t == "text")
     out = []
 
     if b["sponsored"] and not re.search(r"제공받아|대가|지원받아|협찬", text):
         out.append(("error", "협찬 고지 문구가 없습니다. 반드시 넣어주세요."))
     for w in BANNED:
         if w in text:
-            out.append(("error", f"단정적인 효능 표현: ‘{w}’ — 빼주세요."))
+            out.append(("error", f"단정적인 효능 표현: '{w}' — 빼주세요."))
     if OPENING not in text:
         out.append(("error", "오프닝 인사가 바뀌었습니다."))
     if CLOSING not in text:
@@ -105,9 +143,9 @@ def check(blocks, b):
     if ratio < 0.5:
         out.append(("warning", f"♥ (!) ㅎㅎ 로 끝나는 문단이 {ratio:.0%} — 톤이 조금 딱딱해요"))
 
-    slots = sum(1 for t, _ in blocks if t == "photo")
-    if slots < 8:
-        out.append(("warning", f"사진 자리가 {slots}개 — 평소보다 적어요"))
+    n_photo = sum(1 for t, _, _ in blocks if t == "photo")
+    if n_photo < 8:
+        out.append(("warning", f"사진 자리가 {n_photo}개 — 평소보다 적어요"))
 
     if not out:
         out.append(("success", "이상 없어요. 그대로 올리셔도 됩니다 ♥"))
@@ -117,24 +155,31 @@ def check(blocks, b):
 # ───────────────────────────────────────────────
 # LLM
 # ───────────────────────────────────────────────
-def write(b, key):
+def slot_briefs(b):
     slots = [{
         "slot": "hook",
-        "brief": f"오프닝 인사 다음에 올 도입부 2~3문장. 근황: {b['hook']}. "
+        "brief": f"오프닝 인사 다음에 올 도입부 3~5문장. 근황: {b['hook']}. "
                  f"단비의 문제 상황: {b['problem']}. 그래서 \"{b['pfull']}\"를 소개하겠다는 "
-                 f"흐름으로 자연스럽게 이어라. 제품명은 큰따옴표로 감싸라."
+                 f"흐름으로 자연스럽게 이어라. 제품명은 큰따옴표로 감싸라. "
+                 f"구체적인 장면(언제, 어디서, 단비가 뭘 하고 있었는지)으로 시작해라."
     }]
     for i, p in enumerate(b["points"]):
         extra = f' 문단 안에 "{b["pfull"]}" 를 한 번 넣어라.' if i % 2 == 0 else ""
         slots.append({"slot": f"point{i}",
-                      "brief": f"좋았던 점 '{p}' 를 2~4문장 문단으로 풀어라.{extra}"})
+                      "brief": f"좋았던 점 '{p}' 를 4~6문장 문단으로 풀어라. "
+                               f"실제 있었던 장면처럼 구체적으로 쓰고, 이전 제품이나 방법과 "
+                               f"비교하는 문장을 하나 넣어라.{extra}"})
         if i < len(b["terms"]):
             slots.append({"slot": f"info{i}",
                           "brief": f"'{b['terms'][i]}' 를 시그니처 인포박스 포맷으로 작성하라."})
     slots.append({"slot": "wrap",
-                  "brief": f"단비가 제품을 편하게 쓰는 모습으로 마무리하는 감정 문단 2~3문장. "
-                           f"\"{b['pfull']}\" 를 한 번 포함하라."})
+                  "brief": f"단비가 제품을 편하게 쓰는 모습으로 마무리하는 감정 문단 3~4문장, "
+                           f"여운이 남게 써라. \"{b['pfull']}\" 를 한 번 포함하라."})
+    return slots
 
+
+def write(b, key):
+    slots = slot_briefs(b)
     prompt = f"""아래 협찬 리뷰의 각 슬롯 원고를 써라.
 
 브랜드: {b['brand']}
@@ -155,17 +200,51 @@ JSON 객체 하나만 출력하라. 키는 slot 이름, 값은 원고 문자열.
         "required": [s["slot"] for s in slots],
     }
 
-    genai.configure(api_key=key)
-    model = genai.GenerativeModel("gemini-flash-latest", system_instruction=STYLE)
-    r = model.generate_content(
-        prompt,
-        generation_config={
-            "max_output_tokens": 4000,
-            "response_mime_type": "application/json",
-            "response_schema": schema,
-        },
+    r = genai.Client(api_key=key).models.generate_content(
+        model="gemini-flash-latest",
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            system_instruction=STYLE,
+            max_output_tokens=6000,
+            response_mime_type="application/json",
+            response_schema=schema,
+        ),
     )
     return json.loads(r.text.strip())
+
+
+def rewrite_one(b, key, slot):
+    brief = next(s["brief"] for s in slot_briefs(b) if s["slot"] == slot)
+    prompt = f"""아래 협찬 리뷰의 슬롯 하나만 새로 써라.
+
+브랜드: {b['brand']}
+제품명: {b['pname']}
+검색용 이름: {b['pfull']}
+스펙: {' / '.join(f'{k} {v}' for k, v in b['specs'])}
+체험 메모: {b['notes'] or '(없음)'}
+
+슬롯 지시사항: {brief}
+
+원고 텍스트만 출력해라. 설명이나 따옴표로 감싸지 마라."""
+
+    r = genai.Client(api_key=key).models.generate_content(
+        model="gemini-flash-latest",
+        contents=prompt,
+        config=types.GenerateContentConfig(system_instruction=STYLE, max_output_tokens=1200),
+    )
+    return r.text.strip()
+
+
+def friendly_error(e):
+    if isinstance(e, json.JSONDecodeError):
+        return "AI가 형식에 안 맞는 답을 줬어요. 다시 눌러주세요."
+    if isinstance(e, errors.APIError):
+        if e.code in (401, 403):
+            return "API 키가 유효하지 않아요. Secrets에 등록한 GEMINI_API_KEY를 확인해주세요."
+        if e.code == 429:
+            return "API 사용량 한도를 초과했어요. 잠시 후 다시 시도하거나 사용량 한도를 확인해주세요."
+        return "네트워크나 서버 문제로 요청이 실패했어요. 다시 눌러주세요."
+    return f"초안을 못 만들었어요. 다시 눌러주세요.\n\n{e}"
 
 
 # ───────────────────────────────────────────────
@@ -176,16 +255,22 @@ st.title("단비 포스팅 스튜디오 ♥")
 st.caption("제품 정보만 넣으면, 붙여넣기 순서 그대로 초안이 나옵니다")
 
 KEY = st.secrets.get("GEMINI_API_KEY", "")
+LAST = load_last()
 
 with st.sidebar:
     st.header("제품 정보")
-    brand = st.text_input("브랜드", placeholder="바잇미")
+    brand = st.text_input("브랜드", value=LAST.get("brand", ""), placeholder="바잇미")
     pname = st.text_input("제품명", placeholder="바잇미 산리오캐릭터즈 버그쉴드 쿨베스트",
                           help="제품 카드에 그대로 들어갑니다")
     pfull = st.text_input("검색용 이름", placeholder="바잇미 산리오 해충방지 강아지 쿨티",
                           help="본문에 3~5번 자연스럽게 반복됩니다")
-    spec_raw = st.text_area("스펙", "색상 : 블루, 옐로우, 레드\n사이즈 : S ~ 3XL",
-                            help="한 줄에 하나씩,  항목 : 내용")
+
+    st.caption("스펙 — 행을 추가/삭제할 수 있어요")
+    default_specs = LAST.get("specs") or [["색상", "블루, 옐로우, 레드"], ["사이즈", "S ~ 3XL"]]
+    spec_df = st.data_editor(
+        pd.DataFrame(default_specs, columns=["항목", "내용"]),
+        num_rows="dynamic", width="stretch", hide_index=True, key="spec_editor",
+    )
     link = st.text_input("상품 링크", placeholder="https://naver.me/...")
 
     st.header("이번 글 이야기")
@@ -197,47 +282,51 @@ with st.sidebar:
                              help="한 줄에 하나씩")
     notes = st.text_area("메모", placeholder="아무렇게나 적어도 됩니다")
 
-    sponsored = st.checkbox("협찬 받은 제품입니다", value=True)
-    disc = st.text_input("고지 문구", "본 포스팅은 업체로부터 제품을 제공받아 솔직하게 작성하였습니다.") \
+    sponsored = st.checkbox("협찬 받은 제품입니다", value=LAST.get("sponsored", True))
+    disc = st.text_input("고지 문구", LAST.get("disc", "본 포스팅은 업체로부터 제품을 제공받아 솔직하게 작성하였습니다.")) \
         if sponsored else ""
 
-    go = st.button("초안 만들기", type="primary", use_container_width=True)
+    go = st.button("초안 만들기", type="primary", width="stretch")
 
 if go:
     if not KEY:
         st.error("API 키가 설정되지 않았습니다. (배포 설정 → Secrets → GEMINI_API_KEY)")
         st.stop()
     if not pname or not points_raw.strip():
-        st.error("제품명과 ‘좋았던 점’은 최소 한 줄 필요합니다.")
+        st.error("제품명과 '좋았던 점'은 최소 한 줄 필요합니다.")
         st.stop()
+
+    specs = [(str(r["항목"]).strip(), str(r["내용"]).strip())
+             for _, r in spec_df.iterrows() if str(r["항목"]).strip()]
 
     b = {
         "brand": brand, "pname": pname, "pfull": pfull or pname, "link": link,
-        "specs": [tuple(x.split(":", 1)) for x in spec_raw.splitlines() if ":" in x],
+        "specs": specs,
         "hook": hook, "problem": problem,
         "points": [x.strip() for x in points_raw.splitlines() if x.strip()],
         "terms": [x.strip() for x in terms_raw.splitlines() if x.strip()],
         "notes": notes, "sponsored": sponsored, "disc": disc,
     }
-    b["specs"] = [(k.strip(), v.strip()) for k, v in b["specs"]]
 
     with st.spinner("단비 언니 말투로 쓰는 중…"):
         try:
-            st.session_state.blocks = build(b, write(b, KEY))
+            st.session_state.filled = write(b, KEY)
             st.session_state.brief = b
             st.session_state.draft_id = st.session_state.get("draft_id", 0) + 1
+            save_last(b, spec_df)
         except Exception as e:
-            st.error(f"초안을 못 만들었어요. 다시 눌러주세요.\n\n{e}")
+            st.error(friendly_error(e))
 
-if "blocks" in st.session_state:
-    blocks = st.session_state.blocks
+if "filled" in st.session_state:
     b = st.session_state.brief
+    filled = st.session_state.filled
+    blocks = build(b, filled)
     draft_id = st.session_state.get("draft_id", 0)
 
     for lvl, msg in check(blocks, b):
         getattr(st, lvl)(msg)
 
-    n_photo = sum(1 for t, _ in blocks if t == "photo")
+    n_photo = sum(1 for t, _, _ in blocks if t == "photo")
     files = st.file_uploader(
         f"사진을 한 번에 올려주세요 (필요한 사진: {n_photo}장)",
         type=["png", "jpg", "jpeg", "webp"], accept_multiple_files=True,
@@ -262,15 +351,23 @@ if "blocks" in st.session_state:
     st.caption("위에서부터 복사해서 붙여넣고, 초록 칸이 나오면 그 자리에 사진을 넣으세요")
 
     pi = 0
-    for kind, val in blocks:
+    for kind, val, slot in blocks:
         if kind == "text":
             st.code(val, language=None)          # ← 우측 상단에 복사 버튼
+            if slot:
+                if st.button("🔄 이 문단 다시 쓰기", key=f"rewrite_{draft_id}_{slot}"):
+                    with st.spinner("다시 쓰는 중…"):
+                        try:
+                            st.session_state.filled[slot] = rewrite_one(b, KEY, slot)
+                            st.rerun()
+                        except Exception as e:
+                            st.error(friendly_error(e))
         else:
             fi = order[pi] if pi < len(order) else None
             c1, c2 = st.columns([1, 4])
             with c1:
                 if fi is not None and files and fi < len(files):
-                    st.image(files[fi], use_container_width=True)
+                    st.image(files[fi], width="stretch")
                 else:
                     st.markdown(
                         "<div style='height:90px;border:2px dashed #5FCBAA;border-radius:10px;"
@@ -279,3 +376,8 @@ if "blocks" in st.session_state:
             with c2:
                 st.success(f"**사진 {pi + 1}** · {val}")
             pi += 1
+
+    st.divider()
+    with st.expander("체크리스트 다시 보기"):
+        for lvl, msg in check(blocks, b):
+            getattr(st, lvl)(msg)
