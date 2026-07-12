@@ -149,15 +149,23 @@ def write(b, key):
 JSON 객체 하나만 출력하라. 키는 slot 이름, 값은 원고 문자열.
 코드펜스도 다른 설명도 붙이지 마라."""
 
+    schema = {
+        "type": "object",
+        "properties": {s["slot"]: {"type": "string"} for s in slots},
+        "required": [s["slot"] for s in slots],
+    }
+
     genai.configure(api_key=key)
     model = genai.GenerativeModel("gemini-flash-latest", system_instruction=STYLE)
     r = model.generate_content(
         prompt,
-        generation_config={"max_output_tokens": 4000, "response_mime_type": "application/json"},
+        generation_config={
+            "max_output_tokens": 4000,
+            "response_mime_type": "application/json",
+            "response_schema": schema,
+        },
     )
-    raw = r.text.strip()
-    raw = re.sub(r"^```(?:json)?|```$", "", raw, flags=re.M).strip()
-    return json.loads(raw)
+    return json.loads(r.text.strip())
 
 
 # ───────────────────────────────────────────────
